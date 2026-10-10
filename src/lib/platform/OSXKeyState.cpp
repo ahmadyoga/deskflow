@@ -182,10 +182,8 @@ bool isModifier(uint8_t virtualKey)
   return (modifiers.find(virtualKey) != modifiers.end());
 }
 
-AutoTISInputSourceRef copyKeyboardLayoutForKeyTranslation()
+AutoTISInputSourceRef copyKeyboardLayoutForKeyTranslationOnMainQueue()
 {
-  std::lock_guard<std::mutex> lock(g_tisMutex);
-
   AutoTISInputSourceRef keyboardLayout(TISCopyCurrentKeyboardLayoutInputSource(), CFRelease);
   AutoTISInputSourceRef inputSource(TISCopyCurrentKeyboardInputSource(), CFRelease);
 
@@ -206,6 +204,13 @@ AutoTISInputSourceRef copyKeyboardLayoutForKeyTranslation()
     }
   }
 
+  return keyboardLayout;
+}
+
+AutoTISInputSourceRef copyKeyboardLayoutForKeyTranslation()
+{
+  AutoTISInputSourceRef keyboardLayout(nullptr, CFRelease);
+  runOnMainQueue([&keyboardLayout] { keyboardLayout = copyKeyboardLayoutForKeyTranslationOnMainQueue(); });
   return keyboardLayout;
 }
 
@@ -335,11 +340,10 @@ KeyButton OSXKeyState::mapKeyFromEvent(KeyIDs &ids, KeyModifierMask *maskOut, CG
   // get keyboard info
   AutoTISInputSourceRef currentKeyboardLayout = copyKeyboardLayoutForKeyTranslation();
   CFDataRef ref = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_tisMutex);
+  runOnMainQueue([&] {
     if (currentKeyboardLayout)
       ref = (CFDataRef)TISGetInputSourceProperty(currentKeyboardLayout.get(), kTISPropertyUnicodeKeyLayoutData);
-  }
+  });
 
   if (!currentKeyboardLayout) {
     return kKeyNone;
@@ -474,12 +478,11 @@ int32_t OSXKeyState::pollActiveGroup() const
 {
   AutoTISInputSourceRef keyboardLayout(nullptr, CFRelease);
   CFDataRef id = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_tisMutex);
+  runOnMainQueue([&] {
     keyboardLayout = AutoTISInputSourceRef(TISCopyCurrentKeyboardLayoutInputSource(), CFRelease);
     if (keyboardLayout)
       id = (CFDataRef)TISGetInputSourceProperty(keyboardLayout.get(), kTISPropertyInputSourceID);
-  }
+  });
 
   GroupMap::const_iterator i = m_groupMap.find(id);
   if (i != m_groupMap.end()) {
@@ -515,10 +518,7 @@ void OSXKeyState::getKeyMap(deskflow::KeyMap &keyMap)
     for (int32_t g = 0; g < numGroups; ++g) {
       TISInputSourceRef keyboardLayout = (TISInputSourceRef)CFArrayGetValueAtIndex(m_groups.get(), g);
       CFDataRef id = nullptr;
-      {
-        std::lock_guard<std::mutex> lock(g_tisMutex);
-        id = (CFDataRef)TISGetInputSourceProperty(keyboardLayout, kTISPropertyInputSourceID);
-      }
+      runOnMainQueue([&] { id = (CFDataRef)TISGetInputSourceProperty(keyboardLayout, kTISPropertyInputSourceID); });
       m_groupMap[id] = g;
     }
   }
@@ -534,10 +534,9 @@ void OSXKeyState::getKeyMap(deskflow::KeyMap &keyMap)
     // add regular keys from the layout's key data
     TISInputSourceRef keyboardLayout = (TISInputSourceRef)CFArrayGetValueAtIndex(m_groups.get(), g);
     CFDataRef resourceRef = nullptr;
-    {
-      std::lock_guard<std::mutex> lock(g_tisMutex);
+    runOnMainQueue([&] {
       resourceRef = (CFDataRef)TISGetInputSourceProperty(keyboardLayout, kTISPropertyUnicodeKeyLayoutData);
-    }
+    });
 
     layoutValid = resourceRef != nullptr;
     if (layoutValid)
@@ -936,10 +935,7 @@ bool OSXKeyState::getGroups(AutoCFArray &groups) const
       CFDictionaryCreate(nullptr, (const void **)keys, (const void **)values, 1, nullptr, nullptr), CFRelease
   );
   AutoCFArray kbds(nullptr, CFRelease);
-  {
-    std::lock_guard<std::mutex> lock(g_tisMutex);
-    kbds = AutoCFArray(TISCreateInputSourceList(dict.get(), false), CFRelease);
-  }
+  runOnMainQueue([&] { kbds = AutoCFArray(TISCreateInputSourceList(dict.get(), false), CFRelease); });
 
   if (CFArrayGetCount(kbds.get()) > 0) {
     groups = std::move(kbds);
@@ -959,23 +955,21 @@ void OSXKeyState::setGroup(int32_t group)
     return;
   }
   CFBooleanRef canBeSetted = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_tisMutex);
+  runOnMainQueue([&] {
     AutoTISInputSourceRef source(TISCopyCurrentKeyboardInputSource(), CFRelease);
     if (source)
       canBeSetted = (CFBooleanRef)TISGetInputSourceProperty(source.get(), kTISPropertyInputSourceIsEnableCapable);
-  }
+  });
   if (!canBeSetted) {
     LOG_WARN("needed keyboard layout is disabled for programmatically selection");
     return;
   }
 
-  {
-    std::lock_guard<std::mutex> lock(g_tisMutex);
+  runOnMainQueue([&] {
     if (TISSelectInputSource(keyboardLayout) != noErr) {
       LOG_WARN("failed to set needed keyboard layout");
     }
-  }
+  });
 
   LOG_VERBOSE("keyboard layout change to %d", group);
 

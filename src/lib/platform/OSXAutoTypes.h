@@ -6,12 +6,30 @@
 #pragma once
 
 #include <Carbon/Carbon.h>
+#include <dispatch/dispatch.h>
 #include <memory>
-#include <mutex>
+#include <pthread.h>
+#include <type_traits>
 
 using CFDeallocator = decltype(&CFRelease);
 using AutoCFArray = std::unique_ptr<const __CFArray, CFDeallocator>;
 using AutoCFDictionary = std::unique_ptr<const __CFDictionary, CFDeallocator>;
 using AutoTISInputSourceRef = std::unique_ptr<__TISInputSource, CFDeallocator>;
 
-inline std::mutex g_tisMutex;
+/**
+ * @brief Runs @p fn on the main dispatch queue and waits for it to finish.
+ * Text Input Source (TIS/TSM) functions trap when called off the main queue since macOS 27.
+ * Running every call on the main queue also serializes them.
+ */
+// ponytail: deadlocks if the main thread blocks waiting on the calling thread; the core's main
+// thread only waits for the core thread after it has finished.
+template <typename Fn> void runOnMainQueue(Fn &&fn)
+{
+  if (pthread_main_np() != 0) {
+    fn();
+    return;
+  }
+  dispatch_sync_f(dispatch_get_main_queue(), &fn, [](void *context) {
+    (*static_cast<std::remove_reference_t<Fn> *>(context))();
+  });
+}
